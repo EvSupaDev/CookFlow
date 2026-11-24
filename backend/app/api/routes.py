@@ -176,3 +176,47 @@ async def ask_ai_kitchen_rescue(payload: KitchenRescueRequest) -> KitchenRescueR
 @router.post("/ai/auto-tag", response_model=AutoTagResponse)
 async def auto_tag_recipe_with_ai(payload: AutoTagRequest) -> AutoTagResponse:
     return await groq_service.suggest_recipe_tags(payload)
+
+import base64
+import os
+import httpx
+from fastapi import HTTPException
+from pydantic import BaseModel
+
+
+class VoiceTranscribeBody(BaseModel):
+    audioBase64: str
+    mimeType: str = "audio/webm"
+
+
+@router.post("/ai/transcribe")
+async def transcribe_voice_command(body: VoiceTranscribeBody):
+    api_key = os.getenv("GROQ_API_KEY", "").strip()
+    if not api_key or api_key == "gsk_your_key_here":
+        raise HTTPException(status_code=503, detail="GROQ_API_KEY is not configured in backend/.env")
+
+    try:
+        audio_bytes = base64.b64decode(body.audioBase64)
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail="Invalid base64 audio payload") from exc
+
+    clean_mime = body.mimeType.split(";")[0].strip() or "audio/webm"
+    ext = "ogg" if "ogg" in clean_mime else "mp4" if "mp4" in clean_mime else "webm"
+
+    async with httpx.AsyncClient(timeout=20.0) as client:
+        resp = await client.post(
+            "https://api.groq.com/openai/v1/audio/transcriptions",
+            headers={"Authorization": f"Bearer {api_key}"},
+            data={
+                "model": "whisper-large-v3-turbo",
+                "language": "en",
+                "response_format": "json",
+            },
+            files={"file": (f"command.{ext}", audio_bytes, clean_mime)},
+        )
+
+    if resp.status_code != 200:
+        raise HTTPException(status_code=502, detail=f"Groq Whisper error: {resp.text}")
+
+    data = resp.json()
+    return {"transcript": (data.get("text") or "").strip()}

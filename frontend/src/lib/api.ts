@@ -181,7 +181,6 @@ export async function fetchBootstrap(): Promise<BootstrapPayload> {
   try {
     let data = await requestJson<BootstrapPayload>("/bootstrap");
 
-    // Sync any recipes created while offline (id starts with 'offline-') back to SQLite
     const offlineCreated = cached.recipes.filter((r) => r.id.startsWith("offline-"));
     let syncedCount = 0;
     if (offlineCreated.length > 0) {
@@ -472,4 +471,25 @@ export async function askKitchenRescueApi(
     method: "POST",
     body: JSON.stringify(payload),
   });
+}
+
+export async function transcribeVoiceAudioApi(
+  audioBase64: string,
+  mimeType: string
+): Promise<string> {
+  logger.info("AI:Whisper", `Sending recorded audio (${mimeType}) to Groq Whisper`);
+  try {
+    const res = await requestJson<{ transcript: string }>("/ai/transcribe", {
+      method: "POST",
+      body: JSON.stringify({ audioBase64, mimeType }),
+    });
+    return res.transcript;
+  } catch (err) {
+    if (err instanceof ApiHttpError && err.status === 404) {
+      throw new Error(
+        "Backend /api/ai/transcribe route not added yet — add the Whisper snippet to backend/app/api/routes.py or use Chrome/Edge."
+      );
+    }
+    throw err;
+  }
 }
