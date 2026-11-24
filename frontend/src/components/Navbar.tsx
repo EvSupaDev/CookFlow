@@ -5,12 +5,15 @@ interface NavbarProps {
   screen: ScreenName;
   savedCount: number;
   savedOnly: boolean;
+  isOffline: boolean;
+  isReconnecting: boolean;
   timers: ActiveTimer[];
   onGoHome: () => void;
   onOpenAddRecipe: () => void;
   onToggleSavedOnly: () => void;
   onToggleProfile: () => void;
   onOpenAssistant: () => void;
+  onRetryConnection: () => void;
   onExitCookToPrep: () => void;
   onToggleTimerPause: (id: string) => void;
   onRemoveTimer: (id: string) => void;
@@ -20,12 +23,15 @@ export function Navbar({
   screen,
   savedCount,
   savedOnly,
+  isOffline,
+  isReconnecting,
   timers,
   onGoHome,
   onOpenAddRecipe,
   onToggleSavedOnly,
   onToggleProfile,
   onOpenAssistant,
+  onRetryConnection,
   onExitCookToPrep,
   onToggleTimerPause,
   onRemoveTimer,
@@ -170,6 +176,28 @@ export function Navbar({
           )}
         </div>
       </div>
+
+      {/* Visible Offline Mode Banner (with 1-click Reconnect) */}
+      {isOffline && (
+        <div className="bg-amber-100/95 text-amber-950 border-t border-amber-300/80">
+          <div className="max-w-3xl mx-auto px-4 sm:px-6 py-2 flex items-center justify-between gap-3 text-xs">
+            <div className="flex items-center gap-2 min-w-0">
+              <span className="w-2 h-2 rounded-full bg-amber-600 shrink-0" />
+              <p className="truncate">
+                <strong className="font-semibold">Offline Mode:</strong> Recipes, timers, swaps, and local edits stay saved on this device.
+              </p>
+            </div>
+            <button
+              type="button"
+              disabled={isReconnecting}
+              onClick={onRetryConnection}
+              className="shrink-0 px-2.5 py-1 rounded-full bg-amber-900 hover:bg-amber-950 disabled:opacity-60 text-white font-semibold text-[11px] transition-colors"
+            >
+              {isReconnecting ? "Checking..." : "Reconnect"}
+            </button>
+          </div>
+        </div>
+      )}
 
       {/* Persistent Floating Active Timers Bar */}
       {timers.length > 0 && (

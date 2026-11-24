@@ -16,15 +16,19 @@ import { useWakeLock } from "@/hooks/useWakeLock";
 import {
   createRecipeApi,
   fetchBootstrap,
+  readOfflineAiSwaps,
   recordMealCookedApi,
   toggleSaveRecipeApi,
   updateProfileApi,
+  writeOfflineAiSwaps,
 } from "@/lib/api";
 import { logger } from "@/lib/logger";
 import type { IngredientSwap, Recipe, ScreenName, UserProfile } from "@/types/recipe";
 
 export function App() {
   const [isLoading, setIsLoading] = useState(true);
+  const [isOffline, setIsOffline] = useState(false);
+  const [isReconnecting, setIsReconnecting] = useState(false);
   const [screen, setScreen] = useState<ScreenName>("discover");
 
   const [recipes, setRecipes] = useState<Recipe[]>(SEED_RECIPES);
@@ -48,7 +52,7 @@ export function App() {
   const [swaps, setSwaps] = useState<Record<string, number>>({});
   const [aiSwapsByRecipe, setAiSwapsByRecipe] = useState<
     Record<string, Record<string, IngredientSwap[]>>
-  >({});
+  >(() => readOfflineAiSwaps());
   const [currentStep, setCurrentStep] = useState<number>(0);
   const [stepCompleted, setStepCompleted] = useState<boolean>(false);
 
@@ -88,27 +92,62 @@ export function App() {
     onActivated: () => showToast("Screen will stay awake while you cook"),
   });
 
-  // Hydrate initial recipes, saved list, and kitchen profile from FastAPI
-  useEffect(() => {
-    let cancelled = false;
-    logger.info("App", "Bootstrapping CookFlow application state...");
+  const hydrateState = useCallback(
+    async (isManualRetry = false) => {
+      if (isManualRetry) setIsReconnecting(true);
+      try {
+        const data = await fetchBootstrap();
+        const nextOffline = Boolean(data.offlineFallback);
+        setRecipes(data.recipes);
+        setSavedIds(new Set(data.savedIds));
+        setProfile(data.profile);
+        setServings((prev) => (isManualRetry ? prev : data.profile.defaultServings || 2));
+        if (!isManualRetry && data.recipes.length > 0) {
+          setSelectedRecipeId(data.recipes[0].id);
+        }
+        setIsOffline(nextOffline);
 
-    void fetchBootstrap().then((data) => {
-      if (cancelled) return;
-      setRecipes(data.recipes);
-      setSavedIds(new Set(data.savedIds));
-      setProfile(data.profile);
-      setServings(data.profile.defaultServings || 2);
-      if (data.recipes.length > 0) {
-        setSelectedRecipeId(data.recipes[0].id);
+        if (isManualRetry) {
+          if (nextOffline) {
+            showToast("Still offline—local changes remain saved on this device");
+          } else if ((data.syncedOfflineCount ?? 0) > 0) {
+            showToast(`Back online! Synced ${data.syncedOfflineCount} offline recipe(s)`);
+          } else {
+            showToast("Back online and connected to CookFlow server");
+          }
+        }
+      } finally {
+        setIsLoading(false);
+        if (isManualRetry) setIsReconnecting(false);
       }
-      setIsLoading(false);
-    });
+    },
+    [showToast]
+  );
 
-    return () => {
-      cancelled = true;
+  useEffect(() => {
+    logger.info("App", "Bootstrapping CookFlow application state...");
+    void hydrateState(false);
+  }, [hydrateState]);
+
+  // Automatically retry connection when the browser reports network restoration
+  useEffect(() => {
+    const handleBrowserOnline = () => {
+      logger.info("Network", "Browser 'online' event detected; verifying backend connectivity...");
+      void hydrateState(true);
     };
-  }, []);
+    const handleBrowserOffline = () => {
+      logger.warn("Network", "Browser 'offline' event detected; switching to Offline Mode");
+      setIsOffline(true);
+      showToast("You're offline—saved recipes & timers still work");
+    };
+
+    window.addEventListener("online", handleBrowserOnline);
+    window.addEventListener("offline", handleBrowserOffline);
+    return () => {
+      window.removeEventListener("online", handleBrowserOnline);
+      window.removeEventListener("offline", handleBrowserOffline);
+    };
+  }, [hydrateState, showToast]);
 
   const activeRecipe = useMemo(() => {
     return recipes.find((r) => r.id === selectedRecipeId) || recipes[0] || SEED_RECIPES[0];
@@ -184,13 +223,14 @@ export function App() {
         return next;
       });
       if (!wasSaved) {
-        showToast("Saved to your recipes");
+        showToast(isOffline ? "Saved locally (Offline Mode)" : "Saved to your recipes");
       }
 
       const result = await toggleSaveRecipeApi(recipeId, savedIds);
       setSavedIds(new Set(result.savedIds));
+      setIsOffline(Boolean(result.offline));
     },
-    [savedIds, showToast]
+    [savedIds, isOffline, showToast]
   );
 
   const handleToggleIngredientCheck = useCallback((ingId: string) => {
@@ -216,13 +256,15 @@ export function App() {
             merged.push(candidate);
           }
         }
-        return {
+        const updatedAll = {
           ...prev,
           [activeRecipe.id]: {
             ...recipeMap,
             [ingId]: merged,
           },
         };
+        writeOfflineAiSwaps(updatedAll);
+        return updatedAll;
       });
       if (cached) {
         logger.debug("Swap", `Served cached AI swaps for '${ingId}'`);
@@ -265,7 +307,10 @@ export function App() {
         if (!stepCompleted) {
           logger.info("CookMode", `Completed all steps for '${activeRecipe.title}'`);
           setProfile((prev) => ({ ...prev, mealsCooked: prev.mealsCooked + 1 }));
-          void recordMealCookedApi(profile).then((updated) => setProfile(updated));
+          void recordMealCookedApi(profile).then((res) => {
+            setProfile(res.profile);
+            setIsOffline(res.offline);
+          });
         }
         setStepCompleted(true);
         return;
@@ -284,10 +329,15 @@ export function App() {
         requiresAuthorCredit?: boolean;
       }
     ) => {
-      const created = await createRecipeApi(draftPayload);
+      const { recipe: created, offline } = await createRecipeApi(draftPayload);
+      setIsOffline(offline);
       setRecipes((prev) => [created, ...prev]);
       setSavedIds((prev) => new Set([created.id, ...prev]));
-      showToast("Recipe saved to CookFlow!");
+      showToast(
+        offline
+          ? "Saved offline! Will sync automatically when reconnected."
+          : "Recipe saved to CookFlow!"
+      );
       setSelectedRecipeId(created.id);
       setServings(profile.defaultServings || created.baseServings);
       setCheckedIngredients(new Set());
@@ -325,7 +375,10 @@ export function App() {
       nameSaveTimerRef.current = window.setTimeout(() => {
         const trimmed = nextName.trim();
         if (trimmed) {
-          void updateProfileApi({ name: trimmed }, profile).then((updated) => setProfile(updated));
+          void updateProfileApi({ name: trimmed }, profile).then((res) => {
+            setProfile(res.profile);
+            setIsOffline(res.offline);
+          });
         }
       }, 500);
     },
@@ -336,9 +389,10 @@ export function App() {
     (delta: number) => {
       const nextServings = Math.max(1, Math.min(12, profile.defaultServings + delta));
       setProfile((prev) => ({ ...prev, defaultServings: nextServings }));
-      void updateProfileApi({ defaultServings: nextServings }, profile).then((updated) =>
-        setProfile(updated)
-      );
+      void updateProfileApi({ defaultServings: nextServings }, profile).then((res) => {
+        setProfile(res.profile);
+        setIsOffline(res.offline);
+      });
     },
     [profile]
   );
@@ -346,7 +400,10 @@ export function App() {
   const handleToggleAutoWakeLock = useCallback(() => {
     const nextAuto = !profile.autoWakeLock;
     setProfile((prev) => ({ ...prev, autoWakeLock: nextAuto }));
-    void updateProfileApi({ autoWakeLock: nextAuto }, profile).then((updated) => setProfile(updated));
+    void updateProfileApi({ autoWakeLock: nextAuto }, profile).then((res) => {
+      setProfile(res.profile);
+      setIsOffline(res.offline);
+    });
   }, [profile]);
 
   return (
@@ -355,12 +412,15 @@ export function App() {
         screen={screen}
         savedCount={savedIds.size}
         savedOnly={savedOnly}
+        isOffline={isOffline}
+        isReconnecting={isReconnecting}
         timers={timers}
         onGoHome={goHome}
         onOpenAddRecipe={() => navigateTo("add")}
         onToggleSavedOnly={handleToggleSavedOnly}
         onToggleProfile={() => (screen === "profile" ? goHome() : navigateTo("profile"))}
         onOpenAssistant={() => handleOpenAssistant(null)}
+        onRetryConnection={() => void hydrateState(true)}
         onExitCookToPrep={() => navigateTo("prep")}
         onToggleTimerPause={togglePauseTimer}
         onRemoveTimer={removeTimer}
