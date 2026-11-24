@@ -1,0 +1,30 @@
+# Dependencies & Virtual Environments
+node_modules/
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Environment Variables & Secrets
+.env
+.env.local
+.env.*.local
+
+# Build Outputs & Logs
+dist/
+dist-ssr/
+*.log
+npm-debug.log*
+
+# Local Workflow & Context Helper Files
+files.json
+extract_files.py
+bundle_context.py
+write.ipynb
+
+# Editor & OS Files
+.vscode/*
+!.vscode/extensions.json
+.DS_Store
+Thumbs.db
